@@ -5,31 +5,47 @@ import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import asyncpg
-from sentence_transformers import SentenceTransformer
 import logging
+from dotenv import load_dotenv
 
-# Setup logging
+# Load environment variables
+load_dotenv()
+
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from dotenv import load_dotenv
-load_dotenv()
-
+# FastAPI app
 app = FastAPI(title="Lexomat Intelligence API")
 
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# ThreadPool for blocking model calls
 executor = ThreadPoolExecutor(max_workers=2)
 
+# Database pool
 db_pool: asyncpg.pool.Pool = None
 
+# Model (lazy-loaded)
+model = None
+
+async def get_model():
+    global model
+    if model is None:
+        from sentence_transformers import SentenceTransformer
+        logger.info("Loading embedding model...")
+        model = SentenceTransformer("paraphrase-MiniLM-L3-v2")  # smaller model
+        logger.info("Model loaded successfully")
+    return model
+
+# Startup event: initialize DB
 @app.on_event("startup")
 async def startup():
     global db_pool
@@ -46,6 +62,7 @@ async def startup():
         logger.error(f"Failed to create database pool: {e}")
         raise
 
+# Shutdown event: close DB
 @app.on_event("shutdown")
 async def shutdown():
     global db_pool
@@ -53,14 +70,18 @@ async def shutdown():
         logger.info("Shutting down... Closing database pool")
         await db_pool.close()
 
+# Pydantic request model
 class SearchRequest(BaseModel):
     query: str
     mode: str = "hybrid"
 
+# Get embedding (async)
 async def get_embedding(text: str):
+    model_instance = await get_model()
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(executor, model.encode, text)
+    return await loop.run_in_executor(executor, model_instance.encode, text)
 
+# Health check endpoints
 @app.get("/")
 async def health_check():
     return {
@@ -79,6 +100,7 @@ async def health():
         logger.error(f"Health check failed: {e}")
         return {"status": "unhealthy", "error": str(e)}
 
+# Search endpoint
 @app.post("/search")
 async def search(req: SearchRequest):
     logger.info(f"Search request received - Query: {req.query}, Mode: {req.mode}")
@@ -87,6 +109,7 @@ async def search(req: SearchRequest):
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
     try:
+        # Get embedding
         query_embedding = await get_embedding(req.query)
         query_embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
 
@@ -127,6 +150,7 @@ async def search(req: SearchRequest):
                 results = await conn.fetch(sql, req.query, query_embedding_str)
                 logger.info(f"Hybrid search returned {len(results)} results")
 
+        # Prepare output
         output = []
         for r in results:
             row = {
