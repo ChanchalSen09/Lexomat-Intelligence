@@ -6,6 +6,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import asyncpg
 import logging
+import ssl
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -36,33 +37,37 @@ db_pool: asyncpg.pool.Pool = None
 # Model (lazy-loaded)
 model = None
 
-async def get_model():
-    global model
-    if model is None:
-        from sentence_transformers import SentenceTransformer
-        logger.info("Loading embedding model...")
-        model = SentenceTransformer("paraphrase-MiniLM-L3-v2")  # smaller model
-        logger.info("Model loaded successfully")
-    return model
+# -------------------------------
+# Database startup/shutdown
+# -------------------------------
+async def startup_db_pool():
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE  # Only for testing; ideally verify certs
 
-# Startup event: initialize DB
-@app.on_event("startup")
-async def startup():
-    global db_pool
-    logger.info("Starting up... Initializing database pool")
     try:
-        db_pool = await asyncpg.create_pool(
+        pool = await asyncpg.create_pool(
             dsn=os.getenv("SUPABASE_DB_URL"),
             min_size=1,
             max_size=5,
+            ssl=ssl_context,
             command_timeout=60
         )
+        # Test connection
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
         logger.info("Database pool created successfully")
+        return pool
     except Exception as e:
         logger.error(f"Failed to create database pool: {e}")
         raise
 
-# Shutdown event: close DB
+@app.on_event("startup")
+async def startup():
+    global db_pool
+    logger.info("Starting up... Initializing database pool")
+    db_pool = await startup_db_pool()
+
 @app.on_event("shutdown")
 async def shutdown():
     global db_pool
@@ -70,18 +75,33 @@ async def shutdown():
         logger.info("Shutting down... Closing database pool")
         await db_pool.close()
 
+# -------------------------------
 # Pydantic request model
+# -------------------------------
 class SearchRequest(BaseModel):
     query: str
     mode: str = "hybrid"
 
-# Get embedding (async)
+# -------------------------------
+# Model embedding
+# -------------------------------
+async def get_model():
+    global model
+    if model is None:
+        from sentence_transformers import SentenceTransformer
+        logger.info("Loading embedding model...")
+        model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
+        logger.info("Model loaded successfully")
+    return model
+
 async def get_embedding(text: str):
     model_instance = await get_model()
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, model_instance.encode, text)
 
+# -------------------------------
 # Health check endpoints
+# -------------------------------
 @app.get("/")
 async def health_check():
     return {
@@ -100,11 +120,13 @@ async def health():
         logger.error(f"Health check failed: {e}")
         return {"status": "unhealthy", "error": str(e)}
 
+# -------------------------------
 # Search endpoint
+# -------------------------------
 @app.post("/search")
 async def search(req: SearchRequest):
     logger.info(f"Search request received - Query: {req.query}, Mode: {req.mode}")
-    
+
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
@@ -124,7 +146,6 @@ async def search(req: SearchRequest):
                     LIMIT 10;
                 """
                 results = await conn.fetch(sql, req.query)
-                logger.info(f"Keyword search returned {len(results)} results")
 
             elif req.mode == "semantic":
                 sql = """
@@ -135,7 +156,6 @@ async def search(req: SearchRequest):
                     LIMIT 10;
                 """
                 results = await conn.fetch(sql, query_embedding_str)
-                logger.info(f"Semantic search returned {len(results)} results")
 
             else:  # hybrid
                 sql = """
@@ -148,7 +168,6 @@ async def search(req: SearchRequest):
                     LIMIT 10;
                 """
                 results = await conn.fetch(sql, req.query, query_embedding_str)
-                logger.info(f"Hybrid search returned {len(results)} results")
 
         # Prepare output
         output = []
@@ -164,7 +183,6 @@ async def search(req: SearchRequest):
                 row["vector_score"] = float(r["vector_score"])
             output.append(row)
 
-        logger.info(f"Returning {len(output)} results")
         return {"results": output, "count": len(output)}
 
     except Exception as e:
