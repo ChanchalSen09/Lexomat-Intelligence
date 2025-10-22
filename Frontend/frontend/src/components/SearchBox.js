@@ -9,6 +9,12 @@ export default function SearchBox() {
   const [mode, setMode] = useState("hybrid");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Use environment variable for API URL, fallback to Render deployment
+  const API_URL =
+    process.env.NEXT_PUBLIC_API_URL ||
+    "https://lexomat-intelligence.onrender.com";
 
   const sampleQueries = [
     "Similarity Search",
@@ -23,18 +29,50 @@ export default function SearchBox() {
 
   const handleSearch = async () => {
     if (!query.trim()) return;
+
     setLoading(true);
+    setError(null);
 
     try {
       const res = await axios.post(
-        "http://localhost:8000/search",
+        `${API_URL}/search`,
         { query, mode },
-        { timeout: 5000 }
+        {
+          timeout: 30000, // 30 seconds for first request (model loading)
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
       );
-      setResults(res.data);
+
+      // Handle the new response format: { results: [...], count: N }
+      if (res.data.results) {
+        setResults(res.data.results);
+      } else if (Array.isArray(res.data)) {
+        // Fallback for old format
+        setResults(res.data);
+      } else {
+        setResults([]);
+      }
     } catch (err) {
-      console.error(err);
-      alert("Search failed");
+      console.error("Search error:", err);
+
+      let errorMessage = "Search failed. Please try again.";
+
+      if (err.response) {
+        // Server responded with error
+        errorMessage =
+          err.response.data?.detail || `Server error: ${err.response.status}`;
+      } else if (err.request) {
+        // Request made but no response
+        errorMessage =
+          "Cannot reach the server. Please check if the backend is running.";
+      } else {
+        errorMessage = err.message;
+      }
+
+      setError(errorMessage);
+      setResults([]);
     } finally {
       setLoading(false);
     }
@@ -53,6 +91,9 @@ export default function SearchBox() {
           <span className="font-medium text-purple-700">Hybrid</span> search in
           one unified interface.
         </p>
+
+        {/* API Status Indicator */}
+        <p className="text-xs text-gray-400 mt-2">Connected to: {API_URL}</p>
       </div>
 
       {/* Search Input Section */}
@@ -64,6 +105,7 @@ export default function SearchBox() {
             placeholder="Search your dataset..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyPress={(e) => e.key === "Enter" && handleSearch()}
             className="flex-1 p-3 outline-none text-gray-700 text-base bg-transparent"
           />
         </div>
@@ -109,36 +151,53 @@ export default function SearchBox() {
       {/* Divider */}
       <div className="border-t border-gray-200 mb-6"></div>
 
+      {/* Error Message */}
+      {error && (
+        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+          <p className="text-red-700 text-sm font-medium">❌ {error}</p>
+        </div>
+      )}
+
+      {/* Loading State */}
+      {loading && (
+        <div className="text-center py-12">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+          <p className="text-gray-600 mt-4">Searching...</p>
+        </div>
+      )}
+
       {/* Results Section */}
-      <div className="space-y-5">
-        {results.length === 0 && !loading && (
-          <p className="text-gray-500 text-center italic">
-            No results yet — try a search above!
-          </p>
-        )}
+      {!loading && (
+        <div className="space-y-5">
+          {results.length === 0 && !error && (
+            <p className="text-gray-500 text-center italic py-12">
+              No results yet — try a search above!
+            </p>
+          )}
 
-        {results.map((r) => (
-          <div
-            key={r.id}
-            className="p-6 bg-white border border-gray-100 rounded-2xl shadow-sm hover:shadow-lg transition-all duration-200">
-            <h2 className="font-semibold text-lg text-gray-900">{r.title}</h2>
-            <p className="text-gray-700 mt-1 leading-relaxed">{r.body}</p>
+          {results.map((r) => (
+            <div
+              key={r.id}
+              className="p-6 bg-white border border-gray-100 rounded-2xl shadow-sm hover:shadow-lg transition-all duration-200">
+              <h2 className="font-semibold text-lg text-gray-900">{r.title}</h2>
+              <p className="text-gray-700 mt-1 leading-relaxed">{r.body}</p>
 
-            <div className="mt-3 flex gap-4 text-sm text-gray-500">
-              {r.fts_score !== undefined && (
-                <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md">
-                  FTS Score: {r.fts_score.toFixed(3)}
-                </span>
-              )}
-              {r.vector_score !== undefined && (
-                <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md">
-                  Vector Score: {r.vector_score.toFixed(3)}
-                </span>
-              )}
+              <div className="mt-3 flex gap-4 text-sm text-gray-500">
+                {r.fts_score !== undefined && r.fts_score !== null && (
+                  <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md">
+                    FTS Score: {r.fts_score.toFixed(3)}
+                  </span>
+                )}
+                {r.vector_score !== undefined && r.vector_score !== null && (
+                  <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md">
+                    Vector Score: {r.vector_score.toFixed(3)}
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
