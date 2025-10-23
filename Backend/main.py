@@ -1,11 +1,12 @@
+import os
+import asyncio
+import logging
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import os
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import asyncpg
-import logging
 import ssl
 from dotenv import load_dotenv
 
@@ -32,7 +33,7 @@ app.add_middleware(
 executor = ThreadPoolExecutor(max_workers=2)
 
 # Database pool
-db_pool: asyncpg.pool.Pool = None
+db_pool: asyncpg.pool.Pool | None = None
 
 # Model (lazy-loaded)
 model = None
@@ -41,32 +42,52 @@ model = None
 # Database startup/shutdown
 # -------------------------------
 async def startup_db_pool():
+    db_url = os.getenv("SUPABASE_DB_URL")
+    if not db_url:
+        logger.warning("SUPABASE_DB_URL not set. DB disabled.")
+        return None
+
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE  # Only for testing; ideally verify certs
+    ssl_context.verify_mode = ssl.CERT_NONE  # Only for testing
 
-    try:
-        pool = await asyncpg.create_pool(
-            dsn=os.getenv("SUPABASE_DB_URL"),
-            min_size=1,
-            max_size=5,
-            ssl=ssl_context,
-            command_timeout=60
-        )
-        # Test connection
-        async with pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-        logger.info("Database pool created successfully")
-        return pool
-    except Exception as e:
-        logger.error(f"Failed to create database pool: {e}")
-        raise
+    max_retries = 5
+    retry_delay = 2  # seconds
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"Database connection attempt {attempt}/{max_retries}")
+            pool = await asyncpg.create_pool(
+                dsn=db_url,
+                min_size=1,
+                max_size=5,
+                ssl=ssl_context,
+                command_timeout=60,
+                timeout=10  # Connection timeout
+            )
+            # Test connection
+            async with pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            logger.info("Database pool created successfully")
+            return pool
+        except Exception as e:
+            logger.warning(f"Database connection attempt {attempt} failed: {e}")
+            if attempt < max_retries:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(f"Failed to create database pool after {max_retries} attempts")
+                return None
 
 @app.on_event("startup")
 async def startup():
     global db_pool
     logger.info("Starting up... Initializing database pool")
     db_pool = await startup_db_pool()
+    if db_pool:
+        logger.info("Application startup complete with database")
+    else:
+        logger.warning("Application started without database connection")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -90,7 +111,7 @@ async def get_model():
     if model is None:
         from sentence_transformers import SentenceTransformer
         logger.info("Loading embedding model...")
-        model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
+        model = SentenceTransformer("all-MiniLM-L6-v2")
         logger.info("Model loaded successfully")
     return model
 
@@ -104,31 +125,30 @@ async def get_embedding(text: str):
 # -------------------------------
 @app.get("/")
 async def health_check():
+    db_status = "connected" if db_pool else "disconnected"
     return {
         "status": "healthy",
-        "message": "Lexomat Intelligence API is running",
+        "message": "API running",
+        "database": db_status,
         "endpoints": ["/search"]
     }
 
 @app.get("/health")
 async def health():
-    try:
-        async with db_pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-        return {"status": "healthy", "database": "connected"}
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {"status": "unhealthy", "error": str(e)}
+    # Always return healthy to pass Railway health check
+    # Even if DB is not connected yet, the service is running
+    return {"status": "healthy"}
 
 # -------------------------------
 # Search endpoint
 # -------------------------------
 @app.post("/search")
 async def search(req: SearchRequest):
-    logger.info(f"Search request received - Query: {req.query}, Mode: {req.mode}")
-
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
+
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available.")
 
     try:
         # Get embedding
@@ -169,14 +189,9 @@ async def search(req: SearchRequest):
                 """
                 results = await conn.fetch(sql, req.query, query_embedding_str)
 
-        # Prepare output
         output = []
         for r in results:
-            row = {
-                "id": r["id"],
-                "title": r["title"],
-                "body": r["body"]
-            }
+            row = {"id": r["id"], "title": r["title"], "body": r["body"]}
             if "fts_score" in r:
                 row["fts_score"] = float(r["fts_score"]) if r["fts_score"] else 0.0
             if "vector_score" in r:

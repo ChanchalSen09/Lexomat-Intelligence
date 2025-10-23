@@ -11,10 +11,7 @@ export default function SearchBox() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Use environment variable for API URL, fallback to Render deployment
-  const API_URL =
-    process.env.NEXT_PUBLIC_API_URL ||
-    "https://lexomat-intelligence.onrender.com";
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   const sampleQueries = [
     "Similarity Search",
@@ -38,18 +35,16 @@ export default function SearchBox() {
         `${API_URL}/search`,
         { query, mode },
         {
-          timeout: 30000, // 30 seconds for first request (model loading)
+          timeout: 30000,
           headers: {
             "Content-Type": "application/json",
           },
         }
       );
 
-      // Handle the new response format: { results: [...], count: N }
       if (res.data.results) {
         setResults(res.data.results);
       } else if (Array.isArray(res.data)) {
-        // Fallback for old format
         setResults(res.data);
       } else {
         setResults([]);
@@ -60,11 +55,9 @@ export default function SearchBox() {
       let errorMessage = "Search failed. Please try again.";
 
       if (err.response) {
-        // Server responded with error
         errorMessage =
           err.response.data?.detail || `Server error: ${err.response.status}`;
       } else if (err.request) {
-        // Request made but no response
         errorMessage =
           "Cannot reach the server. Please check if the backend is running.";
       } else {
@@ -80,7 +73,6 @@ export default function SearchBox() {
 
   return (
     <div className="max-w-5xl mx-auto mt-16 p-8 bg-gradient-to-br from-white via-gray-50 to-blue-50 shadow-lg rounded-3xl border border-gray-200">
-      {/* Header */}
       <div className="text-center mb-8">
         <h1 className="text-4xl font-extrabold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
           Lexomat Intelligence Hybrid Search
@@ -92,11 +84,9 @@ export default function SearchBox() {
           one unified interface.
         </p>
 
-        {/* API Status Indicator */}
         <p className="text-xs text-gray-400 mt-2">Connected to: {API_URL}</p>
       </div>
 
-      {/* Search Input Section */}
       <div className="flex flex-col sm:flex-row gap-4 mb-8">
         <div className="flex flex-1 items-center bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden focus-within:ring-2 focus-within:ring-blue-500">
           <FiSearch className="ml-3 text-gray-400" size={22} />
@@ -131,7 +121,6 @@ export default function SearchBox() {
         </button>
       </div>
 
-      {/* Quick Example Keywords */}
       <div className="flex flex-wrap gap-3 justify-center mb-8">
         {sampleQueries.map((kw) => (
           <button
@@ -148,17 +137,14 @@ export default function SearchBox() {
         ))}
       </div>
 
-      {/* Divider */}
       <div className="border-t border-gray-200 mb-6"></div>
 
-      {/* Error Message */}
       {error && (
         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
           <p className="text-red-700 text-sm font-medium">❌ {error}</p>
         </div>
       )}
 
-      {/* Loading State */}
       {loading && (
         <div className="text-center py-12">
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
@@ -166,7 +152,6 @@ export default function SearchBox() {
         </div>
       )}
 
-      {/* Results Section */}
       {!loading && (
         <div className="space-y-5">
           {results.length === 0 && !error && (
