@@ -147,18 +147,6 @@ DevOps and automation workflows
 - ✅ Suitable for short-to-medium documents
 - ✅ Low memory footprint
 
-Alternatives to consider:
-- `all-mpnet-base-v2` - Higher quality, slower
-- `OpenAI text-embedding-ada-002` - Best quality, API cost
-- Domain-specific models - If specialized content
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📄 License
-
-This project is open source and available under the MIT License.
 
 ## 👤 Author
 
